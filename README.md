@@ -7,8 +7,8 @@
 ---
 
 ```plaintext
-Correlate/
-├── Correlate/
+correlate-health/
+├── correlate-health/
 |     ├── CorrelateApp.swift     # App entry point with TabView setup
 │     ├── HealthManager.swift    # Handles HealthKit authorization and data
 │     ├── ContentView.swift      # Dashboard list of metrics
@@ -18,7 +18,7 @@ Correlate/
 │     ├── SettingsView.swift     # User settings form
 |     ├── Assets.xcassets/       # App icons and assets (Xcode-managed)
 |     └── Info.plist             # App configuration and permissions
-└── Correlate.xcodeproj/         # Xcode project file
+└── correlate-health.xcodeproj/  # Xcode project file
 ```
 
 ---
