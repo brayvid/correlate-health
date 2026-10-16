@@ -2,8 +2,6 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<key>UILaunchStoryboardName</key>
-	<string>Storyboard</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>
@@ -12,5 +10,7 @@
 	<string>correlate-health-app</string>
 	<key>NSHealthShareUsageDescription</key>
 	<string>This app uses Health data to visualize your wellness metrics.</string>
+	<key>UILaunchStoryboardName</key>
+	<string>Storyboard</string>
 </dict>
 </plist>
