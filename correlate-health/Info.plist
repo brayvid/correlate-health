@@ -9,7 +9,9 @@
 	<key>CFBundleName</key>
 	<string>correlate-health-app</string>
 	<key>NSHealthShareUsageDescription</key>
-	<string>This app uses Health data to visualize your wellness metrics.</string>
+	<string>Correlate reads your steps, sleep, vitals, nutrition, and body measurements to compute correlations and uncover health patterns.</string>
+	<key>NSHealthUpdateUsageDescription</key>
+	<string>Correlate works strictly on read permissions to analyze your wellness data.</string>
 	<key>UILaunchStoryboardName</key>
 	<string>Storyboard</string>
 </dict>

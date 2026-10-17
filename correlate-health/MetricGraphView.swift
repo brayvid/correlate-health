@@ -3,202 +3,340 @@
 //  Correlate
 //
 //  Created by Blake Rayvid on 4/12/25.
+//
+
 import SwiftUI
+import Charts
 import HealthKit
 
 struct MetricGraphView: View {
-    var title: String
-    var samples: [HKQuantitySample]
-
+    let metric: HealthMetricType
     @EnvironmentObject var healthManager: HealthManager
-    @State private var selectedGranularity: Calendar.Component = .day
-    @State private var visibleIndices: Set<Int> = []
-    @State private var dynamicMaxValue: Double = 1
-    @State private var dynamicMinValue: Double = 0
 
-    private var barWidth: CGFloat {
-        switch selectedGranularity {
-        case .weekOfYear: return 8
-        case .month: return 12
-        case .year: return 16
-        default: return 4
+    @State private var selectedGranularity: Calendar.Component = .day
+    @State private var selectedChartStyle: ChartStyle = .standard
+    @State private var selectedTransform: TransformType = .raw
+
+    enum ChartStyle: String, CaseIterable, Identifiable {
+        case standard = "Auto"
+        case line = "Line"
+        case bar = "Bar"
+        case area = "Area"
+        var id: String { rawValue }
+    }
+
+    struct ChartPoint: Identifiable {
+        let id = UUID()
+        let date: Date
+        let value: Double
+    }
+
+    var chartData: [ChartPoint] {
+        guard let baseDaily = healthManager.dailySeries[metric.id] else { return [] }
+        let transformedDaily = TimeSeriesTransforms.transform(dailySeries: baseDaily, type: selectedTransform)
+        
+        if selectedGranularity == .day {
+            return transformedDaily.map { ChartPoint(date: $0.key, value: $0.value) }
+                .sorted { $0.date < $1.date }
+        }
+
+        let calendar = Calendar.current
+        let grouped = Dictionary(grouping: transformedDaily.keys) { date -> Date in
+            calendar.dateInterval(of: selectedGranularity, for: date)?.start ?? date
+        }
+
+        var aggregated: [ChartPoint] = []
+        for (bucketDate, dates) in grouped {
+            let values = dates.compactMap { transformedDaily[$0] }
+            guard !values.isEmpty else { continue }
+            let val = (metric.aggregation == .cumulativeSum && selectedTransform == .raw)
+                ? values.reduce(0, +)
+                : (values.reduce(0, +) / Double(values.count))
+            aggregated.append(ChartPoint(date: bucketDate, value: val))
+        }
+
+        return aggregated.sorted { $0.date < $1.date }
+    }
+
+    var stats: (avg: Double, min: Double, max: Double, total: Double, latest: Double)? {
+        let vals = chartData.map(\.value)
+        guard !vals.isEmpty else { return nil }
+        let total = vals.reduce(0, +)
+        let avg = total / Double(vals.count)
+        return (
+            avg: avg,
+            min: vals.min() ?? 0,
+            max: vals.max() ?? 0,
+            total: total,
+            latest: vals.last ?? 0
+        )
+    }
+
+    var effectiveIsLine: Bool {
+        switch selectedChartStyle {
+        case .line: return true
+        case .bar: return false
+        case .area: return true
+        case .standard: return metric.defaultLineChart || selectedTransform.isDerivative
         }
     }
 
-    private let spacing: CGFloat = 0.5
-
-    var isLineChart: Bool {
-        let lower = title.lowercased()
-        return lower.contains("heart rate") || lower.contains("hrv") || lower.contains("body mass") || lower.contains("bmi")
-    }
-
     var body: some View {
-        VStack {
-            Text("\(title) Trend")
-                .font(.headline)
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                // Header & Controls
+                VStack(spacing: 12) {
+                    Picker("Granularity", selection: $selectedGranularity) {
+                        Text("Daily").tag(Calendar.Component.day)
+                        Text("Weekly").tag(Calendar.Component.weekOfYear)
+                        Text("Monthly").tag(Calendar.Component.month)
+                    }
+                    .pickerStyle(SegmentedPickerStyle())
 
-            Picker("View By", selection: $selectedGranularity) {
-                Text("Daily").tag(Calendar.Component.day)
-                Text("Weekly").tag(Calendar.Component.weekOfYear)
-                Text("Monthly").tag(Calendar.Component.month)
-                Text("Yearly").tag(Calendar.Component.year)
-            }
-            .pickerStyle(SegmentedPickerStyle())
-            .padding(.horizontal)
-
-            let averagedData = healthManager.average(samples: samples, by: selectedGranularity, using: unit(for: title))
-
-            GeometryReader { geometry in
-                let availableHeight = geometry.size.height * 0.6
-                let maxValue = max(dynamicMaxValue, 1)
-                let minValue = isLineChart ? dynamicMinValue : 0
-                let barHeightMultiplier = availableHeight / max(maxValue - minValue, 1)
-                let contentWidth = CGFloat(averagedData.count) * (barWidth + spacing)
-                let fullWidth = max(contentWidth + geometry.size.width * 0.4, geometry.size.width)
-
-                VStack {
-                    ScrollViewReader { proxy in
-                        ScrollView(.horizontal) {
-                            ZStack(alignment: .bottomLeading) {
-                                if isLineChart {
-                                    Path { path in
-                                        for (i, dataPoint) in averagedData.enumerated() {
-                                            let x = CGFloat(i) * (barWidth + spacing) + geometry.size.width * 0.2
-                                            let adjustedValue = dataPoint.value - minValue
-                                            let y = availableHeight - CGFloat(adjustedValue) * barHeightMultiplier
-                                            if i == 0 {
-                                                path.move(to: CGPoint(x: x, y: y))
-                                            } else {
-                                                path.addLine(to: CGPoint(x: x, y: y))
-                                            }
-                                        }
-                                    }
-                                    .stroke(Color.red, lineWidth: 2)
-                                    .frame(width: fullWidth, height: availableHeight + 20)
-                                }
-
-                                HStack(alignment: .bottom, spacing: spacing) {
-                                    ForEach(Array(averagedData.enumerated()), id: \.offset) { index, dataPoint in
-                                        VStack(spacing: 0) {
-                                            if !isLineChart {
-                                                Rectangle()
-                                                    .frame(width: barWidth, height: CGFloat(dataPoint.value - minValue) * barHeightMultiplier)
-                                                    .foregroundColor(.blue)
-                                            }
-                                            if index % labelInterval(for: selectedGranularity) == 0 {
-                                                Text(formattedDate(dataPoint.date, component: selectedGranularity))
-                                                    .font(.system(size: 7))
-                                                    .rotationEffect(.degrees(-45))
-                                                    .frame(width: 28)
-                                            } else {
-                                                Text("")
-                                                    .frame(width: 0, height: 0)
-                                            }
-                                        }
-                                        .background(GeometryReader { barGeo in
-                                            Color.clear.preference(key: VisibleBarPreferenceKey.self, value: [VisibleBar(index: index, minX: barGeo.frame(in: .named("scroll")).minX, maxX: barGeo.frame(in: .named("scroll")).maxX)])
-                                        })
-                                        .id(index)
-                                    }
-                                }
-                                .padding(.leading, geometry.size.width * 0.2)
-                                .padding(.trailing, geometry.size.width * 0.2)
-                            }
-                            .frame(width: fullWidth, height: availableHeight + 20)
-                            .coordinateSpace(name: "scroll")
-                            .onPreferenceChange(VisibleBarPreferenceKey.self) { values in
-                                let visible = values.filter { $0.minX >= 0 && $0.maxX <= geometry.size.width }
-                                let newVisibleIndices = Set(visible.map { $0.index })
-                                if newVisibleIndices != visibleIndices {
-                                    visibleIndices = newVisibleIndices
-
-                                    let visibleData = averagedData.enumerated().filter { visibleIndices.contains($0.offset) }.map { $0.element }
-                                    dynamicMaxValue = visibleData.map { $0.value }.max() ?? 1
-                                    dynamicMinValue = isLineChart ? (visibleData.map { $0.value }.min() ?? 0) : 0
+                    HStack {
+                        Menu {
+                            Picker("Series Transform", selection: $selectedTransform) {
+                                ForEach(TransformType.allCases) { t in
+                                    Text(t.rawValue).tag(t)
                                 }
                             }
-                            .task {
-                                if let last = averagedData.indices.last {
-                                    try? await Task.sleep(nanoseconds: 200_000_000)
-                                    withAnimation {
-                                        proxy.scrollTo(last, anchor: .center)
+                        } label: {
+                            HStack {
+                                Image(systemName: "function")
+                                Text(selectedTransform.rawValue)
+                                Image(systemName: "chevron.down")
+                            }
+                            .font(.subheadline.bold())
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6)
+                            .background(Color(.secondarySystemBackground))
+                            .cornerRadius(8)
+                        }
+
+                        Spacer()
+
+                        Picker("Chart Style", selection: $selectedChartStyle) {
+                            ForEach(ChartStyle.allCases) { style in
+                                Text(style.rawValue).tag(style)
+                            }
+                        }
+                        .pickerStyle(SegmentedPickerStyle())
+                        .frame(maxWidth: 200)
+                    }
+                }
+                .padding(.horizontal)
+
+                // Stats Dashboard Bar
+                if let s = stats {
+                    HStack(spacing: 12) {
+                        StatCard(title: "Latest", value: String(format: "%.1f", s.latest), unit: metric.unitLabel)
+                        StatCard(title: "Average", value: String(format: "%.1f", s.avg), unit: metric.unitLabel)
+                        StatCard(title: "Min", value: String(format: "%.1f", s.min), unit: metric.unitLabel)
+                        StatCard(title: "Max", value: String(format: "%.1f", s.max), unit: metric.unitLabel)
+                    }
+                    .padding(.horizontal)
+                }
+
+                // Main Uniform Chart View
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        Image(systemName: metric.icon)
+                            .foregroundColor(metric.color)
+                        Text("\(metric.displayName)\(selectedTransform.shortSuffix)")
+                            .font(.headline)
+                        Spacer()
+                        Text("Units: \(metric.unitLabel)")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                    .padding(.horizontal)
+
+                    if chartData.isEmpty {
+                        VStack(spacing: 12) {
+                            Image(systemName: "chart.bar.xaxis")
+                                .font(.system(size: 40))
+                                .foregroundColor(.secondary)
+                            Text("No recorded data for \(metric.displayName)")
+                                .foregroundColor(.secondary)
+                                .font(.subheadline)
+                        }
+                        .frame(maxWidth: .infinity, minHeight: 280)
+                        .background(Color(.secondarySystemGroupedBackground))
+                        .cornerRadius(12)
+                        .padding(.horizontal)
+                    } else {
+                        Chart(chartData) { point in
+                            if selectedChartStyle == .area {
+                                AreaMark(
+                                    x: .value("Date", point.date),
+                                    y: .value(metric.unitLabel, point.value)
+                                )
+                                .foregroundStyle(
+                                    LinearGradient(
+                                        colors: [metric.color.opacity(0.4), metric.color.opacity(0.05)],
+                                        startPoint: .top,
+                                        endPoint: .bottom
+                                    )
+                                )
+                                .interpolationMethod(.catmullRom)
+
+                                LineMark(
+                                    x: .value("Date", point.date),
+                                    y: .value(metric.unitLabel, point.value)
+                                )
+                                .foregroundStyle(metric.color)
+                                .lineStyle(StrokeStyle(lineWidth: 2))
+                                .interpolationMethod(.catmullRom)
+                            } else if effectiveIsLine {
+                                LineMark(
+                                    x: .value("Date", point.date),
+                                    y: .value(metric.unitLabel, point.value)
+                                )
+                                .foregroundStyle(metric.color)
+                                .lineStyle(StrokeStyle(lineWidth: 2.2))
+                                .interpolationMethod(.catmullRom)
+
+                                PointMark(
+                                    x: .value("Date", point.date),
+                                    y: .value(metric.unitLabel, point.value)
+                                )
+                                .foregroundStyle(metric.color)
+                                .symbolSize(chartData.count > 60 ? 0 : 18)
+                            } else {
+                                BarMark(
+                                    x: .value("Date", point.date, unit: calendarUnit(selectedGranularity)),
+                                    y: .value(metric.unitLabel, point.value)
+                                )
+                                .foregroundStyle(metric.color.gradient)
+                                .cornerRadius(3)
+                            }
+
+                            if let s = stats {
+                                RuleMark(y: .value("Average", s.avg))
+                                    .foregroundStyle(Color.secondary.opacity(0.7))
+                                    .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 4]))
+                                    .annotation(position: .top, alignment: .trailing) {
+                                        Text("Avg: \(String(format: "%.1f", s.avg)) \(metric.unitLabel)")
+                                            .font(.caption2)
+                                            .foregroundColor(.secondary)
+                                            .padding(2)
+                                    }
+                            }
+                        }
+                        .chartYAxis {
+                            AxisMarks(position: .leading) { value in
+                                AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5, dash: [2, 2]))
+                                    .foregroundStyle(Color.gray.opacity(0.3))
+                                AxisTick()
+                                AxisValueLabel {
+                                    if let d = value.as(Double.self) {
+                                        Text(String(format: "%.0f", d))
+                                            .font(.caption2)
                                     }
                                 }
                             }
                         }
+                        .chartXAxis {
+                            AxisMarks(values: .automatic) { value in
+                                AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5, dash: [2, 2]))
+                                    .foregroundStyle(Color.gray.opacity(0.2))
+                                AxisTick()
+                                if let date = value.as(Date.self) {
+                                    AxisValueLabel {
+                                        Text(date, format: dateChartFormat(for: selectedGranularity))
+                                    }
+                                }
+                            }
+                        }
+                        .chartYScale(domain: yDomain)
+                        .frame(height: 320)
+                        .padding()
+                        .background(Color(.secondarySystemGroupedBackground))
+                        .cornerRadius(14)
+                        .shadow(color: Color.black.opacity(0.04), radius: 6, x: 0, y: 3)
+                        .padding(.horizontal)
                     }
-                    Spacer()
                 }
+
+                // Insights & Context Card
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("About \(metric.displayName)")
+                        .font(.headline)
+                    Text("Category: \(metric.category.rawValue) • Aggregated by \(metric.aggregation == .cumulativeSum ? "Daily Total" : "Daily Average"). Derivatives (Δ) show day-over-day changes to detect trends.")
+                        .font(.footnote)
+                        .foregroundColor(.secondary)
+                }
+                .padding()
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color(.secondarySystemGroupedBackground))
+                .cornerRadius(12)
+                .padding(.horizontal)
+            }
+            .padding(.vertical)
+        }
+        .background(Color(.systemGroupedBackground))
+        .navigationTitle(metric.displayName)
+        .navigationBarTitleDisplayMode(.inline)
+    }
+
+    private var yDomain: ClosedRange<Double> {
+        let values = chartData.map(\.value)
+        guard let minVal = values.min(), let maxVal = values.max() else { return 0...100 }
+        if selectedTransform.isDerivative {
+            let bound = max(abs(minVal), abs(maxVal)) * 1.15
+            return (-bound)...(bound == 0 ? 1 : bound)
+        }
+        if effectiveIsLine {
+            let padding = max((maxVal - minVal) * 0.15, 1.0)
+            return max(0, minVal - padding)...(maxVal + padding)
+        } else {
+            return 0...(maxVal * 1.15)
+        }
+    }
+
+    private func calendarUnit(_ component: Calendar.Component) -> Calendar.Component {
+        switch component {
+        case .weekOfYear: return .weekOfYear
+        case .month: return .month
+        default: return .day
+        }
+    }
+
+    private func dateChartFormat(for component: Calendar.Component) -> Date.FormatStyle {
+            switch component {
+            case .day:
+                return .dateTime.month(.defaultDigits).day(.defaultDigits)
+            case .weekOfYear:
+                return .dateTime.month(.abbreviated).day(.defaultDigits)
+            case .month:
+                return .dateTime.month(.abbreviated)
+            default:
+                return .dateTime.month(.defaultDigits).day(.defaultDigits)
             }
         }
-        .padding(.vertical)
-    }
-
-    private func labelInterval(for component: Calendar.Component) -> Int {
-        switch component {
-        case .day: return 7
-        case .weekOfYear: return 4
-        case .month: return 2
-        case .year: return 1
-        default: return 5
-        }
-    }
-
-    private func formattedDate(_ date: Date, component: Calendar.Component) -> String {
-        let formatter = DateFormatter()
-        switch component {
-        case .day:
-            formatter.dateFormat = "MM/dd"
-        case .weekOfYear:
-            formatter.dateFormat = "'Wk' w"
-        case .month:
-            formatter.dateFormat = "MMM yy"
-        case .year:
-            formatter.dateFormat = "yyyy"
-        default:
-            formatter.dateFormat = "MM/dd"
-        }
-        return formatter.string(from: date)
-    }
-
-    private func unit(for title: String) -> HKUnit {
-        switch title.lowercased() {
-        case "active energy": return .kilocalorie()
-        case "dietary energy": return .kilocalorie()
-        case "protein", "dietary protein":
-            return .gram()
-        case "fat", "dietary fat":
-            return .gram()
-        case "carbohydrates", "carbs":
-            return .gram()
-        case "heart rate":
-            return HKUnit(from: "count/min")
-        case "hrv":
-            return HKUnit.secondUnit(with: .milli)
-        case "weight", "body mass":
-            return .gramUnit(with: .kilo)
-        case "bmi":
-            return HKUnit.count()
-        case "sleep", "temperature":
-            return .degreeCelsius()
-        case "step count", "steps":
-            return .count()
-        default:
-            return .count()
-        }
-    }
 }
 
-struct VisibleBar: Equatable {
-    let index: Int
-    let minX: CGFloat
-    let maxX: CGFloat
-}
+struct StatCard: View {
+    let title: String
+    let value: String
+    let unit: String
 
-struct VisibleBarPreferenceKey: PreferenceKey {
-    static var defaultValue: [VisibleBar] = []
-
-    static func reduce(value: inout [VisibleBar], nextValue: () -> [VisibleBar]) {
-        value.append(contentsOf: nextValue())
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title)
+                .font(.caption2)
+                .foregroundColor(.secondary)
+            HStack(alignment: .firstTextBaseline, spacing: 2) {
+                Text(value)
+                    .font(.subheadline.bold())
+                Text(unit)
+                    .font(.system(size: 8))
+                    .foregroundColor(.secondary)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(8)
+        .background(Color(.secondarySystemGroupedBackground))
+        .cornerRadius(8)
     }
 }

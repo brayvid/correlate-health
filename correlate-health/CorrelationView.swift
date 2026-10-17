@@ -3,255 +3,327 @@
 //  Correlate
 //
 //  Created by Blake Rayvid on 4/12/25.
-
-extension Double {
-    func normalized(in array: [Double]) -> Double {
-        guard let min = array.min(), let max = array.max(), max != min else { return 0.5 }
-        return (self - min) / (max - min)
-    }
-}
+//
 
 import SwiftUI
+import Charts
 import HealthKit
-
-extension Array where Element == Double {
-    var average: Double {
-        isEmpty ? 0 : reduce(0, +) / Double(count)
-    }
-}
-
-func truncate(_ date: Date, to granularity: Calendar.Component) -> Date {
-    Calendar.current.dateInterval(of: granularity, for: date)?.start ?? date
-}
 
 struct CorrelationView: View {
     @EnvironmentObject var healthManager: HealthManager
 
-    @State private var metric1: String = "Steps"
-    @State private var metric2: String = "Body Mass"
-    @State private var correlationResult: Double? = nil
-    @State private var currentPoints: [(Double, Double)] = []
+    @State private var metricId1: String = "steps"
+    @State private var transform1: TransformType = .raw
 
-    let metricOptions: [String] = [
-        "Steps", "Active Energy","Dietary Energy", "Protein", "Fat", "Carbohydrates",
-        "Heart Rate", "HRV", "Body Mass", "BMI", "Sleep"
-    ]
+    @State private var metricId2: String = "restingHeartRate"
+    @State private var transform2: TransformType = .raw
+
+    @State private var correlationResult: Double? = nil
+    @State private var pairedPoints: [(date: Date, x: Double, y: Double)] = []
+
+    var metric1: HealthMetricType {
+        HealthCatalog.allMetrics.first { $0.id == metricId1 } ?? HealthCatalog.allMetrics[0]
+    }
+
+    var metric2: HealthMetricType {
+        HealthCatalog.allMetrics.first { $0.id == metricId2 } ?? HealthCatalog.allMetrics[1]
+    }
+
+    // Dynamic X scale tightly fit to data points (does not force 0)
+    var xDomain: ClosedRange<Double> {
+        let xs = pairedPoints.map(\.x)
+        guard let minVal = xs.min(), let maxVal = xs.max(), minVal != maxVal else {
+            let single = xs.first ?? 0
+            return (single - 1)...(single + 1)
+        }
+        let padding = (maxVal - minVal) * 0.06
+        return (minVal - padding)...(maxVal + padding)
+    }
+
+    // Dynamic Y scale tightly fit to data points (does not force 0)
+    var yDomain: ClosedRange<Double> {
+        let ys = pairedPoints.map(\.y)
+        guard let minVal = ys.min(), let maxVal = ys.max(), minVal != maxVal else {
+            let single = ys.first ?? 0
+            return (single - 1)...(single + 1)
+        }
+        let padding = (maxVal - minVal) * 0.06
+        return (minVal - padding)...(maxVal + padding)
+    }
 
     var body: some View {
-        VStack {
-            Text("Correlate Metrics")
-                .font(.headline)
-                .padding()
+        NavigationView {
+            ScrollView {
+                VStack(spacing: 20) {
+                    // Selector Card
+                    VStack(alignment: .leading, spacing: 14) {
+                        Text("Select Variables to Correlate")
+                            .font(.headline)
 
-            Picker("Metric 1", selection: $metric1) {
-                ForEach(metricOptions, id: \.self) { metric in
-                    Text(metric).tag(metric)
-                }
-            }
-            .pickerStyle(MenuPickerStyle())
-            .padding()
+                        // Metric 1 (X Axis)
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("X-AXIS (INDEPENDENT)")
+                                .font(.caption2.bold())
+                                .foregroundColor(.secondary)
 
-            Picker("Metric 2", selection: $metric2) {
-                ForEach(metricOptions, id: \.self) { metric in
-                    Text(metric).tag(metric)
-                }
-            }
-            .pickerStyle(MenuPickerStyle())
-            .padding()
+                            HStack {
+                                Picker("Metric 1", selection: $metricId1) {
+                                    ForEach(HealthCatalog.allMetrics) { m in
+                                        Text(m.displayName).tag(m.id)
+                                    }
+                                }
+                                .pickerStyle(.menu)
 
-            Button("Compute Correlation") {
-                computeCorrelation()
-            }
-            .padding()
+                                Spacer()
 
-            if let result = correlationResult {
-                Text("Correlation Coefficient: \(String(format: "%.2f", result))")
-                    .font(.title2)
+                                Picker("Transform", selection: $transform1) {
+                                    ForEach(TransformType.allCases) { t in
+                                        Text(t.rawValue).tag(t)
+                                    }
+                                }
+                                .pickerStyle(.menu)
+                            }
+                            .padding(8)
+                            .background(Color(.tertiarySystemGroupedBackground))
+                            .cornerRadius(8)
+                        }
+
+                        // Metric 2 (Y Axis)
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Y-AXIS (DEPENDENT)")
+                                .font(.caption2.bold())
+                                .foregroundColor(.secondary)
+
+                            HStack {
+                                Picker("Metric 2", selection: $metricId2) {
+                                    ForEach(HealthCatalog.allMetrics) { m in
+                                        Text(m.displayName).tag(m.id)
+                                    }
+                                }
+                                .pickerStyle(.menu)
+
+                                Spacer()
+
+                                Picker("Transform", selection: $transform2) {
+                                    ForEach(TransformType.allCases) { t in
+                                        Text(t.rawValue).tag(t)
+                                    }
+                                }
+                                .pickerStyle(.menu)
+                            }
+                            .padding(8)
+                            .background(Color(.tertiarySystemGroupedBackground))
+                            .cornerRadius(8)
+                        }
+
+                        Button(action: computeCorrelation) {
+                            HStack {
+                                Image(systemName: "chart.xyaxis.line")
+                                Text("Compute Correlation")
+                            }
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 12)
+                            .background(Color.blue)
+                            .foregroundColor(.white)
+                            .cornerRadius(10)
+                            .fontWeight(.semibold)
+                        }
+                    }
                     .padding()
+                    .background(Color(.secondarySystemGroupedBackground))
+                    .cornerRadius(14)
+                    .padding(.horizontal)
 
-                VStack(alignment: .leading) {
-    Text("\(metric1) vs \(metric2)")
-        .font(.subheadline)
-        .padding(.leading)
-            GeometryReader { geo in
-                let points = currentPoints
-                ZStack(alignment: .topLeading) {
-                    Color(.systemGray6)
+                    // Results Presentation
+                    if let r = correlationResult, !pairedPoints.isEmpty {
+                        VStack(alignment: .leading, spacing: 16) {
+                            // Score Card
+                            HStack(alignment: .center) {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text("Pearson Correlation (r)")
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                    Text(String(format: "%+.3f", r))
+                                        .font(.system(size: 34, weight: .bold, design: .rounded))
+                                        .foregroundColor(rColor(r))
+                                }
+                                Spacer()
+                                VStack(alignment: .trailing, spacing: 4) {
+                                    Text(strengthDescription(r))
+                                        .font(.subheadline.bold())
+                                        .foregroundColor(rColor(r))
+                                    Text("\(pairedPoints.count) matching days")
+                                        .font(.caption2)
+                                        .foregroundColor(.secondary)
+                                }
+                            }
+                            .padding(.bottom, 4)
 
-                    ForEach(Array(points.enumerated()), id: \.0) { i, point in
-                        let xNorm = point.0.normalized(in: points.map(\.0))
-                        let yNorm = point.1.normalized(in: points.map(\.1))
-                        let x = geo.size.width * (0.1 + 0.8 * CGFloat(xNorm))
-                        let y = geo.size.height * (0.9 - 0.8 * CGFloat(yNorm))
-                        Circle()
-                            .fill(Color.blue)
-                            .frame(width: 6, height: 6)
-                            .position(x: x, y: y)
+                            // Scatter Plot fitted to data
+                            let xTitle = "\(metric1.displayName)\(transform1.shortSuffix) (\(metric1.unitLabel))"
+                            let yTitle = "\(metric2.displayName)\(transform2.shortSuffix) (\(metric2.unitLabel))"
+
+                            Chart {
+                                ForEach(Array(pairedPoints.enumerated()), id: \.offset) { _, pt in
+                                    PointMark(
+                                        x: .value(xTitle, pt.x),
+                                        y: .value(yTitle, pt.y)
+                                    )
+                                    .foregroundStyle(Color.blue.opacity(0.65))
+                                    .symbolSize(30)
+                                }
+
+                                // Linear Regression Trendline fit across actual observed xMin...xMax
+                                if let reg = linearRegression(points: pairedPoints) {
+                                    LineMark(
+                                        x: .value("X", reg.xMin),
+                                        y: .value("Y", reg.slope * reg.xMin + reg.intercept)
+                                    )
+                                    .foregroundStyle(Color.red)
+                                    .lineStyle(StrokeStyle(lineWidth: 2.2))
+
+                                    LineMark(
+                                        x: .value("X", reg.xMax),
+                                        y: .value("Y", reg.slope * reg.xMax + reg.intercept)
+                                    )
+                                    .foregroundStyle(Color.red)
+                                    .lineStyle(StrokeStyle(lineWidth: 2.2))
+                                }
+                            }
+                            .chartXScale(domain: xDomain)
+                            .chartYScale(domain: yDomain)
+                            .chartXAxis {
+                                AxisMarks(values: .automatic) { value in
+                                    AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5, dash: [2, 2]))
+                                        .foregroundStyle(Color.gray.opacity(0.2))
+                                    AxisTick()
+                                    AxisValueLabel {
+                                        if let v = value.as(Double.self) {
+                                            Text(String(format: "%.1f", v))
+                                                .font(.caption2)
+                                        }
+                                    }
+                                }
+                            }
+                            .chartYAxis {
+                                AxisMarks(position: .leading, values: .automatic) { value in
+                                    AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5, dash: [2, 2]))
+                                        .foregroundStyle(Color.gray.opacity(0.2))
+                                    AxisTick()
+                                    AxisValueLabel {
+                                        if let v = value.as(Double.self) {
+                                            Text(String(format: "%.1f", v))
+                                                .font(.caption2)
+                                        }
+                                    }
+                                }
+                            }
+                            .chartXAxisLabel(xTitle, alignment: .center)
+                            .chartYAxisLabel(yTitle, position: .leading)
+                            .frame(height: 320)
+                            .padding(.vertical, 8)
+
+                            // Summary Interpretation
+                            Text(explanationText(r: r, m1: metric1.displayName + transform1.shortSuffix, m2: metric2.displayName + transform2.shortSuffix))
+                                .font(.footnote)
+                                .foregroundColor(.secondary)
+                                .padding(10)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .background(Color(.tertiarySystemGroupedBackground))
+                                .cornerRadius(8)
+                        }
+                        .padding()
+                        .background(Color(.secondarySystemGroupedBackground))
+                        .cornerRadius(14)
+                        .padding(.horizontal)
+                    } else if correlationResult != nil {
+                        VStack(spacing: 8) {
+                            Image(systemName: "exclamationmark.triangle")
+                                .font(.title)
+                                .foregroundColor(.orange)
+                            Text("Insufficient Overlapping Data")
+                                .font(.headline)
+                            Text("Both metrics require at least 5 shared calendar days of records.")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                        .padding()
+                        .frame(maxWidth: .infinity)
+                        .background(Color(.secondarySystemGroupedBackground))
+                        .cornerRadius(14)
+                        .padding(.horizontal)
                     }
-
-                    VStack {
-                        Text(String(format: "%.1f", points.map(\.1).max() ?? 0))
-                        Spacer()
-                        Text(String(format: "%.1f", points.map(\.1).min() ?? 0))
-                            .offset(y: -15)
-                    }
-                    .font(.caption2)
-                    .padding(.vertical, 4)
-
-                    // Y-axis label (rotated, centered vertically)
-                    Text("\(metric2) (\(unitLabel(for: metric2)))")
-                        .font(.caption)
-                        .rotationEffect(.degrees(-90))
-                        .position(x: 10, y: geo.size.height / 2)
-
-
-                    // X-axis label (centered at bottom)
-                    Text(metric1)
-                        .font(.caption)
-                        .position(x: geo.size.width / 2, y: geo.size.height - 10)
-
-
-                    HStack {
-                        Text(String(format: "%.1f", points.map(\.0).min() ?? 0))
-                        Spacer()
-                        Text(String(format: "%.1f", points.map(\.0).max() ?? 0))
-                    }
-                    .font(.caption2)
-                    .padding(.horizontal, 4)
-                    .padding(.top, geo.size.height - 16)
+                }
+                .padding(.vertical)
+            }
+            .background(Color(.systemGroupedBackground))
+            .navigationTitle("Correlation Tool")
+            .onAppear {
+                if correlationResult == nil {
+                    computeCorrelation()
                 }
             }
-            .frame(height: 200)
-
-}
-            }
-
-            Spacer()
         }
-        .padding()
     }
 
     func computeCorrelation() {
-        let data1 = samples(for: metric1)
-        let data2 = samples(for: metric2)
-
-        guard let s1 = data1, let s2 = data2, !s1.isEmpty, !s2.isEmpty else {
+        guard let raw1 = healthManager.dailySeries[metric1.id],
+              let raw2 = healthManager.dailySeries[metric2.id] else {
             correlationResult = nil
+            pairedPoints = []
             return
         }
 
-        let grouped1 = Dictionary(grouping: s1) { truncate($0.startDate, to: .day) }
-        let grouped2 = Dictionary(grouping: s2) { truncate($0.startDate, to: .day) }
+        let s1 = TimeSeriesTransforms.transform(dailySeries: raw1, type: transform1)
+        let s2 = TimeSeriesTransforms.transform(dailySeries: raw2, type: transform2)
 
-        let commonDates = Set(grouped1.keys).intersection(grouped2.keys)
-
-        let pairedValues: [(Double, Double)] = commonDates.compactMap { date in
-            guard let group1 = grouped1[date], let group2 = grouped2[date] else { return nil }
-            let val1 = group1.map { $0.quantity.doubleValue(for: unit(for: metric1)) }.average
-            let val2 = group2.map { $0.quantity.doubleValue(for: unit(for: metric2)) }.average
-            return (val1, val2)
-        }
-
-        let x = pairedValues.map(\.0)
-        let y = pairedValues.map(\.1)
-
-        guard x.count > 1 else {
-            correlationResult = nil
-            return
-        }
-
-        correlationResult = pearsonCorrelation(x: x, y: y)
-        currentPoints = pairedValues
-    }
-
-
-    func correlationPoints() -> [(Double, Double)] {
-        let data1 = samples(for: metric1)
-        let data2 = samples(for: metric2)
-
-        guard let s1 = data1, let s2 = data2, !s1.isEmpty, !s2.isEmpty else {
-            return []
-        }
-
-        let grouped1 = Dictionary(grouping: s1) { Calendar.current.startOfDay(for: $0.startDate) }
-        let grouped2 = Dictionary(grouping: s2) { Calendar.current.startOfDay(for: $0.startDate) }
-        let commonDates = Set(grouped1.keys).intersection(grouped2.keys)
-
-        let paired: [(Double, Double)] = commonDates.compactMap { date in
-            guard let g1 = grouped1[date], let g2 = grouped2[date] else { return nil }
-            let v1 = g1.map { $0.quantity.doubleValue(for: unit(for: metric1)) }.average
-            let v2 = g2.map { $0.quantity.doubleValue(for: unit(for: metric2)) }.average
-            return (v1, v2) as (Double, Double)?
-        }
-
-        return paired
-    }
-
-    func samples(for metric: String) -> [HKQuantitySample]? {
-        switch metric {
-        case "Steps": return healthManager.steps
-        case "Active Energy": return healthManager.activeEnergy
-        case "Dietary Energy": return healthManager.dietaryEnergy
-        case "Protein": return healthManager.protein
-        case "Fat": return healthManager.fat
-        case "Carbohydrates": return healthManager.carbohydrates
-        case "Heart Rate": return healthManager.heartRate
-        case "HRV": return healthManager.hrv
-        case "Body Mass": return healthManager.bodyMass
-        case "BMI": return healthManager.bmi
-        case "Sleep": return healthManager.sleep
-        default: return nil
+        if let result = TimeSeriesTransforms.pearsonCorrelation(seriesA: s1, seriesB: s2) {
+            correlationResult = result.r
+            pairedPoints = result.points
+        } else {
+            correlationResult = 0
+            pairedPoints = []
         }
     }
 
-    func unit(for metric: String) -> HKUnit {
-        switch metric.lowercased() {
-        case "active energy": return .kilocalorie()
-        case "dietary energy": return .kilocalorie()
-        case "protein", "fat", "carbohydrates": return .gram()
-        case "heart rate": return HKUnit(from: "count/min")
-        case "hrv": return HKUnit.secondUnit(with: .milli)
-        case "body mass": return .gramUnit(with: .kilo)
-        case "bmi": return HKUnit.count()
-        case "sleep": return .hour()
-        case "steps": return .count()
-        default: return .count()
+    private func linearRegression(points: [(date: Date, x: Double, y: Double)]) -> (slope: Double, intercept: Double, xMin: Double, xMax: Double)? {
+        guard points.count >= 2 else { return nil }
+        let xs = points.map(\.x)
+        let ys = points.map(\.y)
+        guard let xMin = xs.min(), let xMax = xs.max(), xMin != xMax else { return nil }
+        let n = Double(points.count)
+        let sumX = xs.reduce(0, +)
+        let sumY = ys.reduce(0, +)
+        let sumXY = zip(xs, ys).map(*).reduce(0, +)
+        let sumX2 = xs.map { $0 * $0 }.reduce(0, +)
+        let denom = (n * sumX2 - sumX * sumX)
+        guard denom != 0 else { return nil }
+        let slope = (n * sumXY - sumX * sumY) / denom
+        let intercept = (sumY - slope * sumX) / n
+        return (slope, intercept, xMin, xMax)
+    }
+
+    private func rColor(_ r: Double) -> Color {
+        if abs(r) >= 0.6 { return r > 0 ? .green : .red }
+        if abs(r) >= 0.3 { return .blue }
+        return .secondary
+    }
+
+    private func strengthDescription(_ r: Double) -> String {
+        let absR = abs(r)
+        let dir = r >= 0 ? "Positive" : "Inverse"
+        if absR >= 0.7 { return "Strong \(dir)" }
+        if absR >= 0.4 { return "Moderate \(dir)" }
+        if absR >= 0.2 { return "Weak \(dir)" }
+        return "No Correlation"
+    }
+
+    private func explanationText(r: Double, m1: String, m2: String) -> String {
+        let absR = abs(r)
+        if absR < 0.2 {
+            return "No meaningful statistical link observed between \(m1) and \(m2) in your data."
         }
+        let dirWord = r > 0 ? "increases" : "decreases"
+        return "When \(m1) increases, \(m2) tendentially \(dirWord) (r = \(String(format: "%.2f", r))). This represents a \(strengthDescription(r).lowercased()) relationship."
     }
-
-    func pearsonCorrelation(x: [Double], y: [Double]) -> Double {
-        let n = Double(x.count)
-        let sumX = x.reduce(0, +)
-        let sumY = y.reduce(0, +)
-        let sumXY = zip(x, y).map(*).reduce(0, +)
-        let sumX2 = x.map { $0 * $0 }.reduce(0, +)
-        let sumY2 = y.map { $0 * $0 }.reduce(0, +)
-
-        let numerator = (n * sumXY) - (sumX * sumY)
-        let denominator = sqrt((n * sumX2 - sumX * sumX) * (n * sumY2 - sumY * sumY))
-        return denominator == 0 ? 0 : numerator / denominator
-    }
-    
-    func unitLabel(for metric: String) -> String {
-        switch metric.lowercased() {
-        case "active energy": return "kcal"
-        case "dietary energy": return "kcal"
-        case "protein", "fat", "carbohydrates": return "g"
-        case "heart rate": return "bpm"
-        case "hrv": return "ms"
-        case "body mass": return "kg"
-        case "bmi": return "" // unitless
-        case "sleep": return "hrs"
-        case "steps": return "count"
-        default: return ""
-        }
-    }
-
 }
-
-
-
-
-
-
-

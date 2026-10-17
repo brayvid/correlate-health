@@ -4,6 +4,7 @@
 //
 //  Created by Blake Rayvid on 4/12/25.
 //
+
 import SwiftUI
 import HealthKit
 
@@ -13,56 +14,74 @@ struct ContentView: View {
     var body: some View {
         NavigationView {
             List {
-                Section(header: Text("Activity")) {
-                    NavigationLink(destination: MetricGraphView(title: "Steps", samples: healthManager.steps)) {
-                        Text("Step Count")
-                    }
-                    NavigationLink(destination: MetricGraphView(title: "Active Energy", samples: healthManager.activeEnergy)) {
-                        Text("Active Energy")
-                    }
-                }
-
-                Section(header: Text("Nutrition")) {
-                    NavigationLink(destination: MetricGraphView(title: "Dietary Energy", samples: healthManager.dietaryEnergy)) {
-                        Text("Dietary Energy")
-                    }
-                    NavigationLink(destination: MetricGraphView(title: "Protein", samples: healthManager.protein)) {
-                        Text("Dietary Protein")
-                    }
-                    NavigationLink(destination: MetricGraphView(title: "Fat", samples: healthManager.fat)) {
-                        Text("Dietary Fat")
-                    }
-                    NavigationLink(destination: MetricGraphView(title: "Carbohydrates", samples: healthManager.carbohydrates)) {
-                        Text("Dietary Carbohydrates")
+                if healthManager.isLoading {
+                    HStack {
+                        ProgressView()
+                            .padding(.trailing, 8)
+                        Text("Reading Apple Health metrics...")
+                            .foregroundColor(.secondary)
                     }
                 }
 
-                Section(header: Text("Vitals")) {
-                    NavigationLink(destination: MetricGraphView(title: "Heart Rate", samples: healthManager.heartRate)) {
-                        Text("Heart Rate")
-                    }
-                    NavigationLink(destination: MetricGraphView(title: "HRV", samples: healthManager.hrv)) {
-                        Text("Heart Rate Variability (HRV)")
-                    }
-                }
-
-                Section(header: Text("Body Measurements")) {
-                    NavigationLink(destination: MetricGraphView(title: "Body Mass", samples: healthManager.bodyMass)) {
-                        Text("Body Mass")
-                    }
-                    NavigationLink(destination: MetricGraphView(title: "BMI", samples: healthManager.bmi)) {
-                        Text("Body Mass Index (BMI)")
-                    }
-                }
-
-                Section(header: Text("Sleep")) {
-                    NavigationLink(destination: MetricGraphView(title: "Sleep", samples: healthManager.sleep)) {
-                        Text("Sleep Temperature")
+                ForEach(MetricCategory.allCases) { category in
+                    let metrics = HealthCatalog.allMetrics.filter { $0.category == category }
+                    Section(header: Label(category.rawValue, systemImage: category.icon)) {
+                        ForEach(metrics) { metric in
+                            NavigationLink(destination: MetricGraphView(metric: metric)) {
+                                MetricRowView(
+                                    metric: metric,
+                                    latestValueText: latestValue(for: metric)
+                                )
+                            }
+                        }
                     }
                 }
             }
-            .listStyle(InsetGroupedListStyle())
-            .navigationTitle("Correlate")
+            .listStyle(.insetGrouped)
+            .navigationTitle("Health Dashboard")
+            .refreshable {
+                healthManager.fetchAllData()
+            }
+        }
+    }
+
+    private func latestValue(for metric: HealthMetricType) -> String? {
+        guard let dayData = healthManager.dailySeries[metric.id], !dayData.isEmpty else {
+            return nil
+        }
+        let sortedDates = dayData.keys.sorted(by: >)
+        guard let latestDate = sortedDates.first, let value = dayData[latestDate] else { return nil }
+        return String(format: "%.1f", value)
+    }
+}
+
+// Extracted subview to keep type-checking complexity low and instantaneous
+struct MetricRowView: View {
+    let metric: HealthMetricType
+    let latestValueText: String?
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: metric.icon)
+                .foregroundColor(metric.color)
+                .frame(width: 26)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(metric.displayName)
+                    .font(.body)
+
+                if let latestVal = latestValueText {
+                    Text("Latest: \(latestVal) \(metric.unitLabel)")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                } else {
+                    Text("No recent entries")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                }
+            }
+
+            Spacer()
         }
     }
 }
